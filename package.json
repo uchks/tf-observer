@@ -1,0 +1,19 @@
+{
+  "name": "tf-observer",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc"
+  },
+  "author": "uchks",
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "axios": "^1.6.3",
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.3.1"
+  }
+}
