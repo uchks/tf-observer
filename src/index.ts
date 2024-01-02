@@ -1,117 +1,338 @@
+//
+//  index.ts
+//  tf-observer
+//
+//  Finished by uchks on 1/1/2024.
+//  Copyright © 2024 uchks. All rights reserved.
+//
+//  Made for Enmity: 
+//  https://discord.gg/Enmity / https://enmity.app
+
+// logError logs errors to the console
+// logEvent logs "events" to the console
+
 // imports
 import { config } from 'dotenv';
-import { fileURLToPath } from 'url';
-import { resolve, dirname } from 'path';
-import { Client, GatewayIntentBits, EmbedBuilder, TextChannel } from 'discord.js';
+import {
+  Client,
+  GatewayIntentBits,
+  EmbedBuilder,
+  TextChannel,
+  SlashCommandBuilder,
+  Interaction,
+  CacheType,
+  ColorResolvable,
+  ChatInputCommandInteraction,
+  PermissionsBitField,
+  ChannelType,
+  GuildMember,
+  REST
+} from 'discord.js';
 import axios from 'axios';
 import fs from 'fs/promises';
+import { Routes } from 'discord-api-types/v9';
 
-// .env configuration
-const envPath = resolve(process.cwd(), '.env');
-config({ path: envPath });
+// initialize dotenv right away
+config();
+
+// validate essential environment variables
+const essentialVariables = ['BOT_TOKEN', 'GUILD_ID', 'CLIENT_ID'];
+for (const variable of essentialVariables) {
+  if (!process.env[variable]) {
+    console.error(`Missing required environment variable: ${variable}`);
+    process.exit(1);
+  }
+}
 
 // constants / variables
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
-const rgb: (r: number, g: number, b: number, msg: string) => string = (r, g, b, msg) =>
-  `\x1b[38;2;${r};${g};${b}m${msg}\x1b[0m`;
-let latestVersion = '0.0';
-const channelId: string = process.env.CHANNEL_ID || '';
-const botToken = process.env.BOT_TOKEN
-const fetchUrl: string = process.env.FETCH_URL || '';
+const BOT_TOKEN = process.env.BOT_TOKEN as string;
+const GUILD_ID = process.env.GUILD_ID as string;
+const CLIENT_ID = process.env.CLIENT_ID as string;
+const FETCH_URL = process.env.FETCH_URL ?? "";
+const APP_NAME = process.env.APP_NAME ?? "";
+const EMBED_COLOR: ColorResolvable = process.env.EMBED_COLOR as ColorResolvable || '#5865F2';
+const EMBED_THUMBNAIL_URL = process.env.EMBED_THUMBNAIL_URL ?? null;
+const DEV_MODE = process.env.DEV_MODE === 'true';
+const SETTINGS_FILE = 'settings.json';
 
-// debugging .env (uncomment if you need to debug)
-// console.log('Current working directory:', process.cwd());
-// console.log('__filename:', __filename);
-// console.log('__dirname:', __dirname);
-// console.log('envPath:', envPath);
-// console.log('Bot Token:', botToken);
-// console.log('channel id:', channelId);
+// interfaces
+interface BotSettings {
+  latestVersion: string;
+  channelId: string;
+}
 
-// on launch
-client.once('ready', () => {
-  console.log(`[${rgb(88, 101, 242, 'tf-observer')}]: Wait 10 minutes...`); // message sent to the console
-  setInterval(fetchAndSendData, 10 * 60 * 1000); // fetchAndSendData runs at every 10 minutes.
+interface EmbedData {
+  title: string;
+  description: string;
+  fields: { name: string; value: string; inline: boolean }[];
+}
+
+// client intents
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMembers,
+  ],
 });
 
-async function loadLatestVersion() { // function to read the contents of "latestVersion.txt"
-  try {
-    const versionFileContents = await fs.readFile('latestVersion.txt', 'utf-8');
-    latestVersion = versionFileContents.trim();
-    console.log(`[${rgb(88, 101, 242, 'tf-observer')}]: Loaded latestVersion from file: ${latestVersion}`);
-  } catch (error) { // error handling
-    console.error(`[${rgb(88, 101, 242, 'tf-observer')}]: Error reading latestVersion from file:`, error);
+// state encapsulation
+class BotState {
+  updatesRoleId: string = '';
+  updateInterval: NodeJS.Timeout | null = null;
+  latestVersion: string = '0.0';
+  channelId: string = '';
+  settings: BotSettings = { latestVersion: '0.0', channelId: '' };
+
+  // load settings.json
+  async loadSettings() {
+    try {
+      const settingsText = await fs.readFile(SETTINGS_FILE, 'utf-8');
+      this.settings = JSON.parse(settingsText) as BotSettings;
+      this.latestVersion = this.settings.latestVersion ?? '0.0';
+      this.channelId = this.settings.channelId ?? process.env.CHANNEL_ID ?? "";
+      logEvent('Settings', `Loaded settings: ${settingsText}`);
+    } catch (error) {
+      logError('Load Settings', error);
+      this.latestVersion = '0.0'; 
+      this.channelId = process.env.CHANNEL_ID ?? "";
+    }
+  }
+
+  // save settings.json
+  async saveSettings() {
+    this.settings = {
+      latestVersion: this.latestVersion, // saves latestVersion (so it doesn't send excess embeds)
+      channelId: this.channelId // saves channelId (used for the command)
+    };
+    try {
+      await fs.writeFile(SETTINGS_FILE, JSON.stringify(this.settings, null, 2), 'utf-8');
+      logEvent('Settings', `Settings updated: ${JSON.stringify(this.settings)}`);
+    } catch (error) {
+      logError('Save Settings', error);
+    }
+  }
+
+  async saveChannelId(channelId: string) {
+    this.channelId = channelId;
+    await this.saveSettings();
   }
 }
 
-async function saveLatestVersion() { // function to save the contents of "latestVersion.txt"
+const botState = new BotState();
+
+// bot start
+client.once('ready', async () => {
+  logEvent('Bot', 'Bot is online!');
   try {
-    await fs.writeFile('latestVersion.txt', latestVersion, 'utf-8');
-  } catch (error) { // error handling
-    console.error(`[${rgb(88, 101, 242, 'tf-observer')}]: Error saving latestVersion to file:`, error);
+    const guild = await client.guilds.fetch(GUILD_ID);
+    const updatesRole = guild.roles.cache.find(role => role.name === 'Updates'); // sets the role for pinging with the TestFlight update embed.
+    botState.updatesRoleId = updatesRole ? updatesRole.id : '';
+    await botState.loadSettings();
+    botState.updateInterval = setInterval(() => fetchAndSendData().catch(err => logError('Interval fetchAndSendData', err)), 10 * 60 * 1000); // runs every 10 minutes
+  } catch (error) {
+    logError('Starting Bot', error);
   }
+});
+
+client.login(BOT_TOKEN).catch(error => {
+  logError('Login Failed', error);
+});
+
+// embed. yessssssss
+function createUpdateEmbed(data: EmbedData): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(EMBED_COLOR)
+    .setThumbnail(EMBED_THUMBNAIL_URL)
+    .setAuthor({ name: APP_NAME })
+    .setTitle(data.title)
+    .setDescription(data.description)
+    .addFields(data.fields)
+    .setTimestamp()
+    .setFooter({ text: 'com.hammerandchisel.discord' }); // static bundleId for the footer cba
 }
 
-client.login(botToken); // logging into the bot
-
-async function fetchAndSendData() { // function to fetch data from Cloudflare Worker and send it in a readable format as an embed
+async function fetchAndSendData(forceSend = false) {
   try {
-    const channel = client.channels.cache.get(channelId) as TextChannel;
-
-    if (!channel) { // error handling
-      console.error(`[${rgb(88, 101, 242, 'tf-observer')}]: Invalid channel or channel is not a text channel.`);
-      return;
+    const channel = client.channels.cache.get(botState.channelId) as TextChannel;
+    if (!channel || !(channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildAnnouncement)) {
+      throw new Error('Invalid or not a text/announcement channel.');
     }
 
-    // constants / variables
-    const response = await axios.get(fetchUrl);
+    const response = await axios.get(FETCH_URL);
     const data = response.data;
 
-    if (!data.platforms || data.platforms.length === 0) { // error handling
-      console.error(`[${rgb(88, 101, 242, 'tf-observer')}]: Invalid or missing platforms array in the received data.`);
-      return;
+    if (!data.platforms || data.platforms.length === 0) {
+      throw new Error('Invalid or missing platforms array in the received data.');
     }
 
-    const platform = data.platforms[0]; // error handling
+    const platform = data.platforms[0];
     if (!platform || !platform.build) {
-      console.error('Invalid or missing build information in the received data.');
-      return;
+      throw new Error('Invalid or missing build information in the received data.');
     }
 
-    // constant / variable
     const currentVersion = platform.build.cfBundleVersion;
 
-    if (latestVersion !== currentVersion) { // basically says if contents of latestVersion.txt doesn't equal the constant above, do the below 
-      latestVersion = currentVersion;
-      await saveLatestVersion(); // runs the saveLatestVersion function to save and store latestVersion into the .txt file
-
-      // debugging only. just logs the variables to the console. (uncomment if you need to debug)
-      //console.log(`Latest Version: ${latestVersion}`);
-      //console.log(`Stored Version: ${currentVersion}`);
-
-      const fileSizeMB = (platform.build.fileSizeUncompressed / (1024 * 1024)).toFixed(2);  // math to make the filesize output and a more digestible format
-
-      const embed = new EmbedBuilder() // creates the embed, self-explanatory
-        .setColor('#0099ff')
-        .setThumbnail('https://is3-ssl.mzstatic.com/image/thumb/Purple116/v4/fa/bf/43/fabf4352-a22e-4f88-796a-5e4bae0c4688/AppIcon-0-0-1x_U007epad-0-0-0-85-220.png/1920x1080bb-80.png')
-        .setAuthor({ name: 'Discord - Chat, Talk & Hangout' })
-        .setTitle(`New build released - ${platform.build.cfBundleShortVersion} (${currentVersion})`)
-        .setDescription('We\'ve got a new beta!')
-        .addFields(
-          { name: 'Uploaded', value: `<t:${Math.floor(new Date(platform.build.releaseDate).getTime() / 1000)}:f>`, inline: true }, // math for unix timestamp
-          { name: 'Expires', value: `<t:${Math.floor(new Date(platform.build.expiration).getTime() / 1000)}:f>`, inline: true }, // math for unix timestamp
-          { name: 'Filesize', value: `${fileSizeMB} MB`, inline: true },
-        )
-        .setTimestamp()
-        .setFooter({ text: data.bundleId });
-
-      // logs to the console an update was found, and the bot will be sending an embed.
-      console.log(`[${rgb(88, 101, 242, 'tf-observer')}]: Update found! Sending an embed...`);
-      channel.send({ embeds: [embed] });
+    // this sends an embed if latestVersion /=/ currentVersion (see constant above) or if someone triggers the manual update command
+    if (botState.latestVersion !== currentVersion || forceSend) {
+      botState.latestVersion = currentVersion;
+      await botState.saveSettings();
+      const embed = createUpdateEmbed({
+        title: `New build released - ${platform.build.cfBundleShortVersion} (${currentVersion})`,
+        description: 'We\'ve got a new beta!',
+        fields: [
+          { name: 'Uploaded', value: `<t:${Math.floor(new Date(platform.build.releaseDate).getTime() / 1000)}:R>`, inline: true }, // relative timestamp for better readability
+          { name: 'Expires', value: `<t:${Math.floor(new Date(platform.build.expiration).getTime() / 1000)}:f>`, inline: true },
+          { name: 'Filesize', value: `${(platform.build.fileSizeUncompressed / (1024 * 1024)).toFixed(2)} MB`, inline: true }
+        ]
+      });
+      logEvent('Update', 'Sending an embed...');
+      channel.send({ content: botState.updatesRoleId ? `<@&${botState.updatesRoleId}>` : "", embeds: [embed] });
     }
-  } catch (error) { // error handling
-    console.error('Error fetching data:', error);
+  } catch (error) {
+    logError('Fetching and Sending Data', error);
   }
 }
 
-// loads latestVersion when the bot starts
-loadLatestVersion();
+const commands = [
+  new SlashCommandBuilder()
+    .setName('setchannel')
+    .setDescription('sets the channel to send update embeds to')
+    .addChannelOption(option =>
+      option.setName('channel')
+        .setDescription('The channel to send updates')
+        .setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('giverole')
+    .setDescription('gives you the TestFlight update notification role'),
+  new SlashCommandBuilder()
+    .setName('removerole')
+    .setDescription('removes the TestFlight update notification role'),
+  new SlashCommandBuilder()
+    .setName('manualupdate')
+    .setDescription('manually trigger an update message'),
+].map(command => command.toJSON());
+
+const rest = new REST({ version: '9' }).setToken(BOT_TOKEN);
+
+// "dev mode"
+(async () => {
+  if (DEV_MODE) {
+    try {
+      console.log(`[${rgb(88, 101, 242, 'tf-observer')}]: Started refreshing application (/) commands.`);
+      await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
+      console.log(`[${rgb(88, 101, 242, 'tf-observer')}]: Successfully reloaded application (/) commands.`);
+    } catch (error) {
+      logError('Reloading Commands', error);
+    }
+  }
+})();
+
+// slash (application) commands
+client.on('interactionCreate', async (interaction: Interaction<CacheType>) => {
+  if (!interaction.isCommand() || !interaction.inGuild()) return;
+
+  const commandInteraction = interaction as ChatInputCommandInteraction;
+
+  try {
+    if (!commandInteraction.guild) {
+      await commandInteraction.reply('This command can only be used in a server.');
+      return;
+    }
+
+    const { commandName } = commandInteraction;
+    const member = commandInteraction.member as GuildMember;
+
+    // set channel command, allows a staff member to set the channel for embeds to send to (primarily used for debugging tbh)
+    if (commandName === 'setchannel') {
+      try {
+        if (!commandInteraction.memberPermissions?.has(PermissionsBitField.Flags.ManageChannels)) {
+          return void await commandInteraction.reply({ content: 'You do not have permission to use this command.', ephemeral: true });
+        }
+
+        const channel = commandInteraction.options.getChannel('channel', true) as TextChannel;
+        if (!channel || (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement)) {
+          return void await commandInteraction.reply({ content: 'Please specify a valid text or announcement channel.', ephemeral: true });
+        }
+
+        const newChannelId = channel.id;
+        await botState.saveChannelId(newChannelId);
+        await interaction.reply({ content: `Channel successfully set to ${channel.name}`, ephemeral: true });
+      } catch (error) {
+        await interaction.reply({ content: `Failed to set the channel. Error: ${error}`, ephemeral: true });
+      }
+    }
+
+    // give role command, allows user to receive the pinging role
+    if (commandName === 'giverole') {
+      const role = commandInteraction.guild.roles.cache.find(role => role.name === 'Updates');
+      if (role) {
+        await member.roles.add(role);
+        await commandInteraction.reply({ content: 'You will now be notified with TestFlight updates.', ephemeral: true });
+      } else {
+        await commandInteraction.reply({ content: 'Update role not found. Please ping <@326237293612367873>.', ephemeral: true });
+      }
+    }
+
+    // remove role command, allows user to remove the pinging role
+    if (commandName === 'removerole') {
+      const role = commandInteraction.guild.roles.cache.find(role => role.name === 'Updates');
+      if (role) {
+        await member.roles.remove(role);
+        await commandInteraction.reply({ content: 'You will no longer be notified of TestFlight Updates.', ephemeral: true });
+      } else {
+        await commandInteraction.reply({ content: 'Update role not found. Please ping <@326237293612367873>.', ephemeral: true });
+      }
+    }
+
+    // manual update command, forces an embed to send
+    if (commandName === 'manualupdate') {
+      if (!commandInteraction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+        return void await commandInteraction.reply({ content: 'You do not have permission to use this command.', ephemeral: true });
+      }
+
+      await commandInteraction.deferReply({ ephemeral: true });
+
+      try {
+        await fetchAndSendData(true);
+        await commandInteraction.editReply('Update notification forced and sent.');
+      } catch (error) {
+        await commandInteraction.editReply('Failed to force send an update notification.');
+        logError('Force Send Update Command', error);
+      }
+    }
+  } catch (error) {
+    console.error('Interaction Create', error);
+    if (commandInteraction.isRepliable()) {
+      await commandInteraction.reply('An error occurred while processing your command.').catch(console.error);
+    }
+  }
+});
+
+// handle bot shutdown gracefully
+process.on('SIGINT', async () => {
+  logEvent('Bot', 'Bot is shutting down...');
+  if (botState.updateInterval) clearInterval(botState.updateInterval);
+  await client.destroy();
+  process.exit();
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logError('Unhandled Rejection', `Reason: ${reason}\nPromise: ${promise}`);
+});
+
+// error logging
+function logError(context: string, error: any) {
+  const message = typeof error === 'string' ? error : `${error.message}\nStack: ${error.stack}`;
+  console.error(`[${new Date().toISOString()}] [Error] [${context}] ${message}`);
+}
+
+// event logging
+function logEvent(context: string, message: string) {
+  console.log(`[${new Date().toISOString()}] [${context}] ${message}`);
+}
+
+// rgb :3
+function rgb(r: number, g: number, b: number, msg: string): string {
+  return `\x1b[38;2;${r};${g};${b}m${msg}\x1b[0m`;
+}
