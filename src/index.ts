@@ -25,6 +25,7 @@ import {
   ChatInputCommandInteraction,
   PermissionsBitField,
   ChannelType,
+  ActivityType,
   GuildMember,
   REST
 } from 'discord.js';
@@ -125,8 +126,21 @@ const botState = new BotState();
 client.once('ready', async () => {
   logEvent('Bot', 'Bot is online!');
   try {
+    // Set the bot's presence
+    if (client.user) {
+      client.user.setPresence({
+        status: 'dnd',
+        activities: [{
+          name: 'for T.F. Updates',
+          type: ActivityType.Watching
+        }]
+      });
+    } else {
+      logError('Client', 'The client is not initialized.');
+    }
+
     const guild = await client.guilds.fetch(GUILD_ID);
-    const updatesRole = guild.roles.cache.find(role => role.name === 'Updates'); // sets the role for pinging with the TestFlight update embed.
+    const updatesRole = guild.roles.cache.find(role => role.name === 'TestFlight Updates');
     botState.updatesRoleId = updatesRole ? updatesRole.id : '';
     await botState.loadSettings();
     botState.updateInterval = setInterval(() => fetchAndSendData().catch(err => logError('Interval fetchAndSendData', err)), 10 * 60 * 1000); // runs every 10 minutes
@@ -134,6 +148,7 @@ client.once('ready', async () => {
     logError('Starting Bot', error);
   }
 });
+;
 
 client.login(BOT_TOKEN).catch(error => {
   logError('Login Failed', error);
@@ -152,8 +167,8 @@ function createUpdateEmbed(data: EmbedData): EmbedBuilder {
     .setFooter({ text: 'com.hammerandchisel.discord' }); // static bundleId for the footer cba
 }
 
-async function fetchAndSendData(forceSend = false) {
-  try {
+async function fetchAndSendData(forceSend = false, ping = false) {
+    try {
     const channel = client.channels.cache.get(botState.channelId) as TextChannel;
     if (!channel || !(channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildAnnouncement)) {
       throw new Error('Invalid or not a text/announcement channel.');
@@ -171,6 +186,7 @@ async function fetchAndSendData(forceSend = false) {
       throw new Error('Invalid or missing build information in the received data.');
     }
 
+    const roleMention = ping && botState.updatesRoleId ? `<@&${botState.updatesRoleId}>` : "";
     const currentVersion = platform.build.cfBundleVersion;
 
     // this sends an embed if latestVersion /=/ currentVersion (see constant above) or if someone triggers the manual update command
@@ -179,15 +195,15 @@ async function fetchAndSendData(forceSend = false) {
       await botState.saveSettings();
       const embed = createUpdateEmbed({
         title: `New build released - ${platform.build.cfBundleShortVersion} (${currentVersion})`,
-        description: 'We\'ve got a new beta!',
+        description: `${platform.build.whatsNew}`,
         fields: [
-          { name: 'Uploaded', value: `<t:${Math.floor(new Date(platform.build.releaseDate).getTime() / 1000)}:R>`, inline: true }, // relative timestamp for better readability
+          { name: 'Release Date', value: `<t:${Math.floor(new Date(platform.build.releaseDate).getTime() / 1000)}:D>`, inline: true }, // follow testflight app detail listing
           { name: 'Expires', value: `<t:${Math.floor(new Date(platform.build.expiration).getTime() / 1000)}:f>`, inline: true },
-          { name: 'Filesize', value: `${(platform.build.fileSizeUncompressed / (1024 * 1024)).toFixed(2)} MB`, inline: true }
+          { name: 'Size', value: `${(platform.build.fileSizeUncompressed / 1000000).toFixed(1)} MB`, inline: true }
         ]
       });
       logEvent('Update', 'Sending an embed...');
-      channel.send({ content: botState.updatesRoleId ? `<@&${botState.updatesRoleId}>` : "", embeds: [embed] });
+      channel.send({ content: roleMention, embeds: [embed] });
     }
   } catch (error) {
     logError('Fetching and Sending Data', error);
@@ -210,7 +226,11 @@ const commands = [
     .setDescription('removes the TestFlight update notification role'),
   new SlashCommandBuilder()
     .setName('manualupdate')
-    .setDescription('manually trigger an update message'),
+    .setDescription('manually trigger an update message')
+    .addBooleanOption(option => 
+      option.setName('ping')
+      .setDescription('Choose whether to ping the update role')
+      .setRequired(false))
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '9' }).setToken(BOT_TOKEN);
@@ -265,7 +285,7 @@ client.on('interactionCreate', async (interaction: Interaction<CacheType>) => {
 
     // give role command, allows user to receive the pinging role
     if (commandName === 'giverole') {
-      const role = commandInteraction.guild.roles.cache.find(role => role.name === 'Updates');
+      const role = commandInteraction.guild.roles.cache.find(role => role.name === 'TestFlight Updates');
       if (role) {
         await member.roles.add(role);
         await commandInteraction.reply({ content: 'You will now be notified with TestFlight updates.', ephemeral: true });
@@ -276,7 +296,7 @@ client.on('interactionCreate', async (interaction: Interaction<CacheType>) => {
 
     // remove role command, allows user to remove the pinging role
     if (commandName === 'removerole') {
-      const role = commandInteraction.guild.roles.cache.find(role => role.name === 'Updates');
+      const role = commandInteraction.guild.roles.cache.find(role => role.name === 'TestFlight Updates');
       if (role) {
         await member.roles.remove(role);
         await commandInteraction.reply({ content: 'You will no longer be notified of TestFlight Updates.', ephemeral: true });
@@ -291,10 +311,11 @@ client.on('interactionCreate', async (interaction: Interaction<CacheType>) => {
         return void await commandInteraction.reply({ content: 'You do not have permission to use this command.', ephemeral: true });
       }
 
+      const shouldPingRole = commandInteraction.options.getBoolean('ping') ?? false;
       await commandInteraction.deferReply({ ephemeral: true });
 
       try {
-        await fetchAndSendData(true);
+        await fetchAndSendData(true, shouldPingRole);
         await commandInteraction.editReply('Update notification forced and sent.');
       } catch (error) {
         await commandInteraction.editReply('Failed to force send an update notification.');
