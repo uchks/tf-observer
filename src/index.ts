@@ -18,6 +18,7 @@ import {
   GatewayIntentBits,
   EmbedBuilder,
   TextChannel,
+  Channel,
   SlashCommandBuilder,
   Interaction,
   CacheType,
@@ -167,9 +168,9 @@ function createUpdateEmbed(data: EmbedData): EmbedBuilder {
     .setFooter({ text: 'com.hammerandchisel.discord' }); // static bundleId for the footer cba
 }
 
-async function fetchAndSendData(forceSend = false, ping = false) {
+async function fetchAndSendData(forceSend = false, ping = true) {
     try {
-    const channel = client.channels.cache.get(botState.channelId) as TextChannel;
+    const channel = client.channels.cache.get(botState.channelId) as Channel;
     if (!channel || !(channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildAnnouncement)) {
       throw new Error('Invalid or not a text/announcement channel.');
     }
@@ -203,7 +204,12 @@ async function fetchAndSendData(forceSend = false, ping = false) {
         ]
       });
       logEvent('Update', 'Sending an embed...');
-      channel.send({ content: roleMention, embeds: [embed] });
+      const sentMessage = await channel.send({ content: roleMention, embeds: [embed] });
+      if (channel.type === ChannelType.GuildAnnouncement) {
+        await sentMessage.crosspost()
+          .then(() => logEvent('Publish Message', 'Message published to announcement channel.'))
+          .catch(error => logError('Publish Message', error));
+      }
     }
   } catch (error) {
     logError('Fetching and Sending Data', error);
@@ -228,14 +234,14 @@ const commands = [
     .setName('manualupdate')
     .setDescription('manually trigger an update message')
     .addBooleanOption(option => 
-      option.setName('ping')
+      option.setName('ping') // god forbid i ping anyone when i test.
       .setDescription('Choose whether to ping the update role')
       .setRequired(false))
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '9' }).setToken(BOT_TOKEN);
 
-// "dev mode"
+// "dev mode", required for reloading slash commands
 (async () => {
   if (DEV_MODE) {
     try {
@@ -311,7 +317,7 @@ client.on('interactionCreate', async (interaction: Interaction<CacheType>) => {
         return void await commandInteraction.reply({ content: 'You do not have permission to use this command.', ephemeral: true });
       }
 
-      const shouldPingRole = commandInteraction.options.getBoolean('ping') ?? false;
+      const shouldPingRole = commandInteraction.options.getBoolean('ping') ?? true;
       await commandInteraction.deferReply({ ephemeral: true });
 
       try {
