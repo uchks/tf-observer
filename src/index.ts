@@ -8,31 +8,22 @@
 //  Made for Enmity: 
 //  https://discord.gg/Enmity / https://enmity.app
 
-// logError logs errors to the console
-// logEvent logs "events" to the console
-
 // imports
 import { config } from 'dotenv';
 import {
   Client,
   GatewayIntentBits,
   EmbedBuilder,
-  TextChannel,
   Channel,
-  SlashCommandBuilder,
-  Interaction,
-  CacheType,
   ColorResolvable,
-  ChatInputCommandInteraction,
-  PermissionsBitField,
   ChannelType,
   ActivityType,
-  GuildMember,
   REST
 } from 'discord.js';
 import axios from 'axios';
 import fs from 'fs/promises';
 import { Routes } from 'discord-api-types/v9';
+import { commands, setupCommandListeners } from './commands.js';
 
 // initialize dotenv right away
 config();
@@ -56,6 +47,22 @@ const EMBED_COLOR: ColorResolvable = process.env.EMBED_COLOR as ColorResolvable 
 const EMBED_THUMBNAIL_URL = process.env.EMBED_THUMBNAIL_URL ?? null;
 const DEV_MODE = process.env.DEV_MODE === 'true';
 const SETTINGS_FILE = 'settings.json';
+const colors = {
+  reset: '\x1b[0m',
+
+  fg: {
+    red: '\x1b[31m',
+    green: '\x1b[32m',
+    yellow: '\x1b[33m',
+    blue: '\x1b[34m',
+  },
+};
+
+export enum LogLevel {
+  INFO = 'Info',
+  WARN = 'Warning',
+  ERROR = 'Error',
+}
 
 // interfaces
 interface BotSettings {
@@ -93,10 +100,16 @@ class BotState {
       this.settings = JSON.parse(settingsText) as BotSettings;
       this.latestVersion = this.settings.latestVersion ?? '0.0';
       this.channelId = this.settings.channelId ?? process.env.CHANNEL_ID ?? "";
-      logEvent('Settings', `Loaded settings: ${settingsText}`);
+      logMessage(LogLevel.INFO, 'Settings', `Loaded settings:\n${settingsText}`);
     } catch (error) {
-      logError('Load Settings', error);
-      this.latestVersion = '0.0'; 
+      let errorMessage: string;
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      } else {
+        errorMessage = String(error);
+      }
+      logMessage(LogLevel.ERROR, 'Load Settings', errorMessage);
+      this.latestVersion = '0.0';
       this.channelId = process.env.CHANNEL_ID ?? "";
     }
   }
@@ -109,9 +122,15 @@ class BotState {
     };
     try {
       await fs.writeFile(SETTINGS_FILE, JSON.stringify(this.settings, null, 2), 'utf-8');
-      logEvent('Settings', `Settings updated: ${JSON.stringify(this.settings)}`);
+      logMessage(LogLevel.INFO, 'Settings', `Settings updated: ${JSON.stringify(this.settings)}`);
     } catch (error) {
-      logError('Save Settings', error);
+      let errorMessage: string;
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      } else {
+        errorMessage = String(error);
+      }
+      logMessage(LogLevel.ERROR, 'Save Settings', errorMessage);
     }
   }
 
@@ -121,13 +140,13 @@ class BotState {
   }
 }
 
-const botState = new BotState();
+export const botState = new BotState();
 
 // bot start
 client.once('ready', async () => {
-  logEvent('Bot', 'Bot is online!');
+  logMessage(LogLevel.INFO, 'Bot', 'Bot is online!');
   try {
-    // Set the bot's presence
+    // set the bot's presence
     if (client.user) {
       client.user.setPresence({
         status: 'dnd',
@@ -137,22 +156,28 @@ client.once('ready', async () => {
         }]
       });
     } else {
-      logError('Client', 'The client is not initialized.');
+      logMessage(LogLevel.ERROR, 'Client', 'The client is not initialized.');
     }
 
     const guild = await client.guilds.fetch(GUILD_ID);
     const updatesRole = guild.roles.cache.find(role => role.name === 'TestFlight Updates');
     botState.updatesRoleId = updatesRole ? updatesRole.id : '';
     await botState.loadSettings();
-    botState.updateInterval = setInterval(() => fetchAndSendData().catch(err => logError('Interval fetchAndSendData', err)), 10 * 60 * 1000); // runs every 10 minutes
+    botState.updateInterval = setInterval(() => fetchAndSendData().catch(err => logMessage(LogLevel.ERROR, 'Interval fetchAndSendData', err)), 10 * 60 * 1000); // runs every 10 minutes
   } catch (error) {
-    logError('Starting Bot', error);
+    let errorMessage: string;
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    } else {
+      errorMessage = String(error);
+    }
+    logMessage(LogLevel.ERROR, 'Starting Bot', errorMessage);
   }
 });
 ;
 
 client.login(BOT_TOKEN).catch(error => {
-  logError('Login Failed', error);
+  logMessage(LogLevel.ERROR, 'Login Failed', error);
 });
 
 // embed. yessssssss
@@ -165,11 +190,11 @@ function createUpdateEmbed(data: EmbedData): EmbedBuilder {
     .setDescription(data.description)
     .addFields(data.fields)
     .setTimestamp()
-    .setFooter({ text: 'com.hammerandchisel.discord' }); // static bundleId for the footer cba
+    .setFooter({ text: 'com.hammerandchisel.discord' }); // static bundleId for the footer, cba
 }
 
-async function fetchAndSendData(forceSend = false, ping = true) {
-    try {
+export async function fetchAndSendData(forceSend = false, ping = true) {
+  try {
     const channel = client.channels.cache.get(botState.channelId) as Channel;
     if (!channel || !(channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildAnnouncement)) {
       throw new Error('Invalid or not a text/announcement channel.');
@@ -203,41 +228,24 @@ async function fetchAndSendData(forceSend = false, ping = true) {
           { name: 'Size', value: `${(platform.build.fileSizeUncompressed / 1000000).toFixed(1)} MB`, inline: true }
         ]
       });
-      logEvent('Update', 'Sending an embed...');
+      logMessage(LogLevel.INFO, 'Update', 'Sending an embed...');
       const sentMessage = await channel.send({ content: roleMention, embeds: [embed] });
       if (channel.type === ChannelType.GuildAnnouncement) {
         await sentMessage.crosspost()
-          .then(() => logEvent('Publish Message', 'Message published to announcement channel.'))
-          .catch(error => logError('Publish Message', error));
+          .then(() => logMessage(LogLevel.INFO, 'Publish Message', 'Message published to announcement channel.'))
+          .catch(error => logMessage(LogLevel.ERROR, 'Publish Message', error));
       }
     }
   } catch (error) {
-    logError('Fetching and Sending Data', error);
+    let errorMessage: string;
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    } else {
+      errorMessage = String(error);
+    }
+    logMessage(LogLevel.ERROR, 'Fetching and Sending Data', errorMessage);
   }
 }
-
-const commands = [
-  new SlashCommandBuilder()
-    .setName('setchannel')
-    .setDescription('sets the channel to send update embeds to')
-    .addChannelOption(option =>
-      option.setName('channel')
-        .setDescription('The channel to send updates')
-        .setRequired(true)),
-  new SlashCommandBuilder()
-    .setName('giverole')
-    .setDescription('gives you the TestFlight update notification role'),
-  new SlashCommandBuilder()
-    .setName('removerole')
-    .setDescription('removes the TestFlight update notification role'),
-  new SlashCommandBuilder()
-    .setName('manualupdate')
-    .setDescription('manually trigger an update message')
-    .addBooleanOption(option => 
-      option.setName('ping') // god forbid i ping anyone when i test.
-      .setDescription('Choose whether to ping the update role')
-      .setRequired(false))
-].map(command => command.toJSON());
 
 const rest = new REST({ version: '9' }).setToken(BOT_TOKEN);
 
@@ -245,121 +253,53 @@ const rest = new REST({ version: '9' }).setToken(BOT_TOKEN);
 (async () => {
   if (DEV_MODE) {
     try {
-      console.log(`[${rgb(88, 101, 242, 'tf-observer')}]: Started refreshing application (/) commands.`);
+      console.log(`[${colors.fg.blue}tf-observer${colors.reset}]: Started refreshing application (/) commands.`);
       await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-      console.log(`[${rgb(88, 101, 242, 'tf-observer')}]: Successfully reloaded application (/) commands.`);
+      console.log(`[${colors.fg.blue}tf-observer${colors.reset}]: Successfully reloaded application (/) commands.`);
     } catch (error) {
-      logError('Reloading Commands', error);
+      let errorMessage: string;
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      } else {
+        errorMessage = String(error);
+      }
+      logMessage(LogLevel.ERROR, 'Reloading Commands', errorMessage);
     }
   }
 })();
 
-// slash (application) commands
-client.on('interactionCreate', async (interaction: Interaction<CacheType>) => {
-  if (!interaction.isCommand() || !interaction.inGuild()) return;
-
-  const commandInteraction = interaction as ChatInputCommandInteraction;
-
-  try {
-    if (!commandInteraction.guild) {
-      await commandInteraction.reply('This command can only be used in a server.');
-      return;
-    }
-
-    const { commandName } = commandInteraction;
-    const member = commandInteraction.member as GuildMember;
-
-    // set channel command, allows a staff member to set the channel for embeds to send to (primarily used for debugging tbh)
-    if (commandName === 'setchannel') {
-      try {
-        if (!commandInteraction.memberPermissions?.has(PermissionsBitField.Flags.ManageChannels)) {
-          return void await commandInteraction.reply({ content: 'You do not have permission to use this command.', ephemeral: true });
-        }
-
-        const channel = commandInteraction.options.getChannel('channel', true) as TextChannel;
-        if (!channel || (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement)) {
-          return void await commandInteraction.reply({ content: 'Please specify a valid text or announcement channel.', ephemeral: true });
-        }
-
-        const newChannelId = channel.id;
-        await botState.saveChannelId(newChannelId);
-        await interaction.reply({ content: `Channel successfully set to ${channel.name}`, ephemeral: true });
-      } catch (error) {
-        await interaction.reply({ content: `Failed to set the channel. Error: ${error}`, ephemeral: true });
-      }
-    }
-
-    // give role command, allows user to receive the pinging role
-    if (commandName === 'giverole') {
-      const role = commandInteraction.guild.roles.cache.find(role => role.name === 'TestFlight Updates');
-      if (role) {
-        await member.roles.add(role);
-        await commandInteraction.reply({ content: 'You will now be notified with TestFlight updates.', ephemeral: true });
-      } else {
-        await commandInteraction.reply({ content: 'Update role not found. Please ping <@326237293612367873>.', ephemeral: true });
-      }
-    }
-
-    // remove role command, allows user to remove the pinging role
-    if (commandName === 'removerole') {
-      const role = commandInteraction.guild.roles.cache.find(role => role.name === 'TestFlight Updates');
-      if (role) {
-        await member.roles.remove(role);
-        await commandInteraction.reply({ content: 'You will no longer be notified of TestFlight Updates.', ephemeral: true });
-      } else {
-        await commandInteraction.reply({ content: 'Update role not found. Please ping <@326237293612367873>.', ephemeral: true });
-      }
-    }
-
-    // manual update command, forces an embed to send
-    if (commandName === 'manualupdate') {
-      if (!commandInteraction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
-        return void await commandInteraction.reply({ content: 'You do not have permission to use this command.', ephemeral: true });
-      }
-
-      const shouldPingRole = commandInteraction.options.getBoolean('ping') ?? true;
-      await commandInteraction.deferReply({ ephemeral: true });
-
-      try {
-        await fetchAndSendData(true, shouldPingRole);
-        await commandInteraction.editReply('Update notification forced and sent.');
-      } catch (error) {
-        await commandInteraction.editReply('Failed to force send an update notification.');
-        logError('Force Send Update Command', error);
-      }
-    }
-  } catch (error) {
-    console.error('Interaction Create', error);
-    if (commandInteraction.isRepliable()) {
-      await commandInteraction.reply('An error occurred while processing your command.').catch(console.error);
-    }
-  }
-});
+setupCommandListeners(client);
 
 // handle bot shutdown gracefully
 process.on('SIGINT', async () => {
-  logEvent('Bot', 'Bot is shutting down...');
+  logMessage(LogLevel.WARN, 'Bot', 'Bot is shutting down...');
   if (botState.updateInterval) clearInterval(botState.updateInterval);
   await client.destroy();
   process.exit();
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  logError('Unhandled Rejection', `Reason: ${reason}\nPromise: ${promise}`);
+  logMessage(LogLevel.ERROR, 'Unhandled Rejection', `Reason: ${reason}\nPromise: ${promise}`);
 });
 
-// error logging
-function logError(context: string, error: any) {
-  const message = typeof error === 'string' ? error : `${error.message}\nStack: ${error.stack}`;
-  console.error(`[${new Date().toISOString()}] [Error] [${context}] ${message}`);
-}
+// consolidated logging for information, warnings, and errors
+export function logMessage(level: LogLevel, context: string, message: string) {
+  const timestamp = new Date().toISOString();
+  let color;
 
-// event logging
-function logEvent(context: string, message: string) {
-  console.log(`[${new Date().toISOString()}] [${context}] ${message}`);
-}
+  switch (level) {
+    case LogLevel.INFO:
+      color = colors.fg.green;
+      break;
+    case LogLevel.WARN:
+      color = colors.fg.yellow;
+      break;
+    case LogLevel.ERROR:
+      color = colors.fg.red;
+      break;
+    default:
+      color = colors.reset;
+  }
 
-// rgb :3
-function rgb(r: number, g: number, b: number, msg: string): string {
-  return `\x1b[38;2;${r};${g};${b}m${msg}\x1b[0m`;
+  console.log(`[${timestamp}] ${color}[${level}: ${context}] ${message}${colors.reset}`);
 }
