@@ -37,6 +37,7 @@ APP_NAME = Discord - Chat, Talk & Hangout // Discord's app name.
 EMBED_COLOR = '' // the color for the embed
 EMBED_THUMBNAIL_URL = 'https://is3-ssl.mzstatic.com/image/thumb/Purple116/v4/fa/bf/43/fabf4352-a22e-4f88-796a-5e4bae0c4688/AppIcon-0-0-1x_U007epad-0-0-0-85-220.png/1920x1080bb-80.png' // Discord's app icon.
 DEV_MODE = false // true will reload commands on bot start every restart, false does not.
+postgresconn = // i used postgres for the database, adjust to your liking
 ```
 
 - **Build & Run:** </br>
