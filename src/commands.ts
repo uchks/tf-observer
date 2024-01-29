@@ -12,8 +12,8 @@
 import {
   SlashCommandBuilder,
   TextChannel,
-  Interaction,
-  CacheType,
+  type Interaction,
+  type CacheType,
   PermissionsBitField,
   ChatInputCommandInteraction,
   GuildMember,
@@ -25,8 +25,8 @@ import {
   logMessage,
   LogLevel,
   UPDATES_ROLE_ID,
-} from './index.js';
-import { saveChannelId } from './libs/database.js';
+} from './index.ts';
+import { saveChannelId } from './libs/database.ts';
 
 export const commands = [
   new SlashCommandBuilder()
